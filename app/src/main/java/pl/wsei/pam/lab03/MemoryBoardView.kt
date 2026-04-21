@@ -59,6 +59,8 @@ class MemoryBoardView(
 
     private fun onClickTile(v: View) {
         val tile = tiles[v.tag]
+        // Bug fix: prevent clicking the same card twice to "match" it with itself
+        if (matchedPair.contains(tile)) return
         matchedPair.push(tile)
         val matchResult = logic.process {
             tile?.tileResource ?: -1
@@ -67,6 +69,10 @@ class MemoryBoardView(
         if (matchResult != GameStates.Matching) {
             matchedPair.clear()
         }
+    }
+
+    fun setEnabled(enabled: Boolean) {
+        tiles.values.forEach { it.button.isEnabled = enabled }
     }
 
     fun setOnGameChangeListener(listener: (event: MemoryGameEvent) -> Unit) {

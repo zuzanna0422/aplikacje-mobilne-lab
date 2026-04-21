@@ -28,7 +28,8 @@
             android:exported="false" />
         <activity
             android:name="pl.wsei.pam.lab03.Lab03Activity"
-            android:exported="false" />
+            android:exported="false"
+            android:theme="@style/Theme.Lab01.ActionBar" />
     </application>
 
 </manifest>

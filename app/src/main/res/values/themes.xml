@@ -6,4 +6,7 @@
     </style>
 
     <style name="Theme.Lab01" parent="Base.Theme.Lab01" />
+
+    <!-- Theme with ActionBar for Lab03Activity (needed for options menu) -->
+    <style name="Theme.Lab01.ActionBar" parent="Theme.Material3.DayNight" />
 </resources>
