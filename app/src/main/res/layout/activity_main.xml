@@ -7,29 +7,38 @@
     android:layout_height="match_parent"
     tools:context=".MainActivity">
 
-    <Button
-        android:id="@+id/mainBtnRunLab01"
+    <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:onClick="onClickMainBtnRunLab01"
-        android:text="@string/lab01"
-        app:layout_constraintBottom_toTopOf="@+id/mainBtnRunLab02"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.5"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintVertical_bias="0.5" />
-
-    <Button
-        android:id="@+id/mainBtnRunLab02"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:onClick="onClickMainBtnRunLab02"
-        android:text="@string/lab02"
+        android:orientation="vertical"
+        android:gravity="center"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintHorizontal_bias="0.5"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/mainBtnRunLab01"
-        app:layout_constraintVertical_bias="0.5" />
+        app:layout_constraintTop_toTopOf="parent">
+
+        <Button
+            android:id="@+id/mainBtnRunLab01"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onClickMainBtnRunLab01"
+            android:text="@string/lab01" />
+
+        <Button
+            android:id="@+id/mainBtnRunLab02"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:onClick="onClickMainBtnRunLab02"
+            android:text="@string/lab02" />
+
+        <Button
+            android:id="@+id/mainBtnRunLab06"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:onClick="onClickMainBtnRunLab06"
+            android:text="@string/lab06" />
+
+    </LinearLayout>
 </androidx.constraintlayout.widget.ConstraintLayout>

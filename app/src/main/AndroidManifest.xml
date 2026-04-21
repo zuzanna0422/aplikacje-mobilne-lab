@@ -30,6 +30,11 @@
             android:name="pl.wsei.pam.lab03.Lab03Activity"
             android:exported="false"
             android:theme="@style/Theme.Lab01.ActionBar" />
+        <activity
+            android:name="pl.wsei.pam.lab06.Lab06Activity"
+            android:exported="false"
+            android:label="Laboratorium 6"
+            android:theme="@style/Theme.Lab01" />
     </application>
 
 </manifest>
