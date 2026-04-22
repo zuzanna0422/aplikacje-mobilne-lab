@@ -1,5 +1,13 @@
 package pl.wsei.pam.lab06
 
+import android.Manifest
+import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,10 +36,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -41,16 +51,26 @@ import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import pl.wsei.pam.lab06.data.AppContainer
 import pl.wsei.pam.lab06.data.CurrentDateProvider
 import pl.wsei.pam.lab06.data.LocalDateConverter
 import pl.wsei.pam.lab06.data.TodoTaskRepository
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+
+const val notificationID = 121
+const val channelID = "Lab06 channel"
+const val titleExtra = "title"
+const val messageExtra = "message"
 
 enum class Priority {
     High, Medium, Low
@@ -70,8 +90,23 @@ fun Lab06Theme(content: @Composable () -> Unit) {
 }
 
 class Lab06Activity : ComponentActivity() {
+
+    companion object {
+        lateinit var container: AppContainer
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        createNotificationChannel()
+        container = (this.application as TodoApplication).container
+
+        // Zadanie: Ustawianie alarmu dla najbliższego zadania
+        lifecycleScope.launch {
+            container.todoTaskRepository.getAllAsStream().collectLatest { tasks ->
+                setupClosestTaskAlarm(tasks)
+            }
+        }
+
         setContent {
             Lab06Theme {
                 Surface(
@@ -83,11 +118,106 @@ class Lab06Activity : ComponentActivity() {
             }
         }
     }
+
+    private fun createNotificationChannel() {
+        val name = "Lab06 channel"
+        val descriptionText = "Lab06 is channel for notifications for approaching tasks."
+        val importance = NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel(channelID, name, importance).apply {
+            description = descriptionText
+        }
+        val notificationManager: NotificationManager =
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.createNotificationChannel(channel)
+    }
+
+    private fun setupClosestTaskAlarm(tasks: List<TodoTask>) {
+        // Filtrujemy niewykonane zadania i bierzemy to z najwcześniejszą datą
+        val closestTask = tasks
+            .filter { !it.isDone }
+            .minByOrNull { it.deadline }
+
+        if (closestTask != null) {
+            // Czas alarmu: 1 dzień przed terminem
+            val alarmTime = LocalDateConverter.toMillis(closestTask.deadline.minusDays(1))
+            scheduleRepeatingAlarm(alarmTime, closestTask.title)
+        } else {
+            // Jeśli nie ma zadań do zrobienia, anulujemy alarm
+            cancelAlarm()
+        }
+    }
+
+    private fun scheduleRepeatingAlarm(time: Long, taskTitle: String) {
+        val intent = Intent(applicationContext, NotificationBroadcastReceiver::class.java).apply {
+            putExtra(titleExtra, "Nadchodzący termin")
+            putExtra(messageExtra, "Zadanie: $taskTitle wygasa jutro!")
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            applicationContext,
+            notificationID,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        val interval = 4 * 60 * 60 * 1000L // 4 godziny
+
+        // Ustawiamy powtarzający się alarm
+        alarmManager.setRepeating(
+            AlarmManager.RTC_WAKEUP,
+            time,
+            interval,
+            pendingIntent
+        )
+    }
+
+    private fun cancelAlarm() {
+        val intent = Intent(applicationContext, NotificationBroadcastReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            applicationContext,
+            notificationID,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
+        )
+        if (pendingIntent != null) {
+            val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+            alarmManager.cancel(pendingIntent)
+        }
+    }
+
+    fun scheduleAlarm(time: Long) {
+        val intent = Intent(applicationContext, NotificationBroadcastReceiver::class.java)
+        intent.putExtra(titleExtra, "Deadline")
+        intent.putExtra(messageExtra, "Zbliża się termin zakończenia zadania")
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            applicationContext,
+            notificationID,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val alarmManager = getSystemService(ALARM_SERVICE) as AlarmManager
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, time, pendingIntent)
+    }
 }
 
+@OptIn(ExperimentalPermissionsApi::class)
 @Composable
 fun MainScreen() {
     val navController = rememberNavController()
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val postNotificationPermission =
+            rememberPermissionState(permission = Manifest.permission.POST_NOTIFICATIONS)
+        LaunchedEffect(key1 = true) {
+            if (!postNotificationPermission.status.isGranted) {
+                postNotificationPermission.launchPermissionRequest()
+            }
+        }
+    }
+
     NavHost(navController = navController, startDestination = "list") {
         composable("list") { ListScreen(navController = navController) }
         composable("form") { FormScreen(navController = navController) }
@@ -510,7 +640,9 @@ fun AppTopBar(
                     )
                 }
             } else {
-                IconButton(onClick = { /*TODO*/ }) {
+                IconButton(onClick = {
+                    Lab06Activity.container.notificationHandler.showSimpleNotification()
+                }) {
                     Icon(imageVector = Icons.Default.Settings, contentDescription = "")
                 }
                 IconButton(onClick = { /*TODO*/ }) {
