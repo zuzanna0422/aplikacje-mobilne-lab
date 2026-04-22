@@ -3,6 +3,7 @@ package pl.wsei.pam.lab06
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
@@ -16,12 +17,12 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -30,13 +31,25 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.CreationExtras
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import java.time.Instant
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import pl.wsei.pam.lab06.data.CurrentDateProvider
+import pl.wsei.pam.lab06.data.LocalDateConverter
+import pl.wsei.pam.lab06.data.TodoTaskRepository
 import java.time.LocalDate
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 enum class Priority {
@@ -44,20 +57,12 @@ enum class Priority {
 }
 
 data class TodoTask(
+    val id: Int = 0,
     val title: String,
     val deadline: LocalDate,
-    val isDone: Boolean,
+    var isDone: Boolean,
     val priority: Priority
 )
-
-fun todoTasks(): List<TodoTask> {
-    return listOf(
-        TodoTask("Programming", LocalDate.of(2024, 4, 18), false, Priority.Low),
-        TodoTask("Teaching", LocalDate.of(2024, 5, 12), false, Priority.High),
-        TodoTask("Learning", LocalDate.of(2024, 6, 28), true, Priority.Low),
-        TodoTask("Cooking", LocalDate.of(2024, 8, 18), false, Priority.Medium),
-    )
-}
 
 @Composable
 fun Lab06Theme(content: @Composable () -> Unit) {
@@ -90,7 +95,12 @@ fun MainScreen() {
 }
 
 @Composable
-fun ListItem(item: TodoTask, modifier: Modifier = Modifier) {
+fun ListItem(
+    item: TodoTask,
+    onStatusToggle: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     ElevatedCard(
         modifier = modifier
             .fillMaxWidth()
@@ -124,19 +134,142 @@ fun ListItem(item: TodoTask, modifier: Modifier = Modifier) {
                     Text(text = "Priorytet", style = MaterialTheme.typography.labelSmall)
                     Text(text = item.priority.name, style = MaterialTheme.typography.titleMedium)
                 }
-                Icon(
-                    imageVector = if (item.isDone) Icons.Default.Done else Icons.Default.Close,
-                    contentDescription = if (item.isDone) "Done" else "Not Done",
-                    tint = if (item.isDone) Color.Green else Color.Red,
-                    modifier = Modifier.size(40.dp).align(Alignment.CenterVertically)
-                )
+                Row {
+                    IconButton(onClick = onStatusToggle) {
+                        Icon(
+                            imageVector = if (item.isDone) Icons.Default.Done else Icons.Default.Close,
+                            contentDescription = if (item.isDone) "Done" else "Not Done",
+                            tint = if (item.isDone) Color.Green else Color.Red,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Delete task",
+                            tint = Color.Gray
+                        )
+                    }
+                }
             }
         }
     }
 }
 
+// VIEW MODELS AND STATE CLASSES
+
+data class ListUiState(val items: List<TodoTask> = listOf())
+
+class ListViewModel(val repository: TodoTaskRepository) : ViewModel() {
+    val listUiState: StateFlow<ListUiState> = repository.getAllAsStream()
+        .map { ListUiState(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(TIMEOUT_MILLIS),
+            initialValue = ListUiState()
+        )
+
+    fun toggleTaskStatus(task: TodoTask) {
+        viewModelScope.launch {
+            repository.updateItem(task.copy(isDone = !task.isDone))
+        }
+    }
+
+    fun deleteTask(task: TodoTask) {
+        viewModelScope.launch {
+            repository.deleteItem(task)
+        }
+    }
+
+    companion object {
+        private const val TIMEOUT_MILLIS = 5_000L
+    }
+}
+
+data class TodoTaskForm(
+    val id: Int = 0,
+    val title: String = "",
+    val deadline: Long = LocalDateConverter.toMillis(LocalDate.now()),
+    val isDone: Boolean = false,
+    val priority: String = Priority.Low.name
+)
+
+data class TodoTaskUiState(
+    var todoTask: TodoTaskForm = TodoTaskForm(),
+    val isValid: Boolean = false
+)
+
+fun TodoTask.toTodoTaskForm(): TodoTaskForm = TodoTaskForm(
+    id = id,
+    title = title,
+    deadline = LocalDateConverter.toMillis(deadline),
+    isDone = isDone,
+    priority = priority.name
+)
+
+fun TodoTaskForm.toTodoTask(): TodoTask = TodoTask(
+    id = id,
+    title = title,
+    deadline = LocalDateConverter.fromMillis(deadline),
+    isDone = isDone,
+    priority = Priority.valueOf(priority)
+)
+
+class FormViewModel(
+    private val repository: TodoTaskRepository,
+    private val dateProvider: CurrentDateProvider
+) : ViewModel() {
+
+    var todoTaskUiState by mutableStateOf(TodoTaskUiState())
+        private set
+
+    suspend fun save() {
+        if (validate()) {
+            repository.insertItem(todoTaskUiState.todoTask.toTodoTask())
+        }
+    }
+
+    fun updateUiState(todoTaskForm: TodoTaskForm) {
+        todoTaskUiState = TodoTaskUiState(todoTask = todoTaskForm, isValid = validate(todoTaskForm))
+    }
+
+    private fun validate(uiState: TodoTaskForm = todoTaskUiState.todoTask): Boolean {
+        val deadlineDate = LocalDateConverter.fromMillis(uiState.deadline)
+        return uiState.title.isNotBlank() && (deadlineDate.isAfter(dateProvider.currentDate) || deadlineDate.isEqual(dateProvider.currentDate))
+    }
+}
+
+// VIEW MODEL PROVIDER
+
+object AppViewModelProvider {
+    val Factory = viewModelFactory {
+        initializer {
+            ListViewModel(
+                repository = todoApplication().container.todoTaskRepository
+            )
+        }
+        initializer {
+            FormViewModel(
+                repository = todoApplication().container.todoTaskRepository,
+                dateProvider = todoApplication().container.currentDateProvider
+            )
+        }
+    }
+}
+
+fun CreationExtras.todoApplication(): TodoApplication {
+    val app = this[androidx.lifecycle.ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY]
+    return app as TodoApplication
+}
+
+// SCREENS
+
 @Composable
-fun ListScreen(navController: NavController) {
+fun ListScreen(
+    navController: NavController,
+    viewModel: ListViewModel = viewModel(factory = AppViewModelProvider.Factory)
+) {
+    val listUiState by viewModel.listUiState.collectAsState()
     Scaffold(
         topBar = {
             AppTopBar(
@@ -163,8 +296,12 @@ fun ListScreen(navController: NavController) {
         },
         content = { paddingValues ->
             LazyColumn(modifier = Modifier.padding(paddingValues)) {
-                items(items = todoTasks()) { item ->
-                    ListItem(item = item)
+                items(items = listUiState.items) { item ->
+                    ListItem(
+                        item = item,
+                        onStatusToggle = { viewModel.toggleTaskStatus(item) },
+                        onDelete = { viewModel.deleteTask(item) }
+                    )
                 }
             }
         }
@@ -173,138 +310,168 @@ fun ListScreen(navController: NavController) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun FormScreen(navController: NavController) {
-    var title by remember { mutableStateOf("") }
-    var selectedPriority by remember { mutableStateOf(Priority.Medium) }
-    var isDone by remember { mutableStateOf(false) }
-    var deadline by remember { mutableStateOf(LocalDate.now()) }
-    
-    val showDialog = rememberSaveable { mutableStateOf(false) }
-    val datePickerState = rememberDatePickerState(
-        initialSelectedDateMillis = deadline.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
-        initialDisplayMode = DisplayMode.Picker
-    )
+fun TodoTaskInputForm(
+    item: TodoTaskForm,
+    modifier: Modifier = Modifier,
+    onValueChange: (TodoTaskForm) -> Unit = {},
+    enabled: Boolean = true
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        OutlinedTextField(
+            value = item.title,
+            onValueChange = { onValueChange(item.copy(title = it)) },
+            label = { Text("Tytuł zadania") },
+            modifier = Modifier.fillMaxWidth(),
+            enabled = enabled
+        )
 
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
+        Text("Priorytet:", style = MaterialTheme.typography.titleMedium)
+        Column(Modifier.selectableGroup()) {
+            Priority.entries.forEach { priority ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .selectable(
+                            selected = (priority.name == item.priority),
+                            onClick = { onValueChange(item.copy(priority = priority.name)) },
+                            role = Role.RadioButton,
+                            enabled = enabled
+                        )
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = (priority.name == item.priority),
+                        onClick = null,
+                        enabled = enabled
+                    )
+                    Text(
+                        text = priority.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier.padding(start = 16.dp)
+                    )
+                }
+            }
+        }
 
-    LaunchedEffect(isPressed) {
-        if (isPressed) {
-            showDialog.value = true
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Checkbox(
+                checked = item.isDone,
+                onCheckedChange = { onValueChange(item.copy(isDone = it)) },
+                enabled = enabled
+            )
+            Text("Czy zadanie jest wykonane?")
+        }
+
+        val datePickerState = rememberDatePickerState(
+            initialDisplayMode = DisplayMode.Picker,
+            yearRange = IntRange(2000, 2030),
+            initialSelectedDateMillis = item.deadline,
+        )
+        var showDialog by remember { mutableStateOf(false) }
+
+        val interactionSource = remember { MutableInteractionSource() }
+        val isPressed by interactionSource.collectIsPressedAsState()
+
+        LaunchedEffect(isPressed) {
+            if (isPressed) {
+                showDialog = true
+            }
+        }
+
+        OutlinedTextField(
+            value = LocalDateConverter.fromMillis(item.deadline).format(DateTimeFormatter.ofPattern("MM/dd/yyyy")),
+            onValueChange = { },
+            label = { Text("Date") },
+            placeholder = { Text("mm/dd/yyyy") },
+            modifier = Modifier.fillMaxWidth(),
+            readOnly = true,
+            enabled = enabled,
+            interactionSource = interactionSource,
+            trailingIcon = {
+                IconButton(onClick = { if (enabled) showDialog = true }) {
+                    Icon(imageVector = Icons.Default.DateRange, contentDescription = "Select Date")
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.primary,
+                focusedLabelColor = MaterialTheme.colorScheme.primary,
+                unfocusedLabelColor = MaterialTheme.colorScheme.primary
+            )
+        )
+
+        if (showDialog) {
+            DatePickerDialog(
+                onDismissRequest = { showDialog = false },
+                confirmButton = {
+                    Button(onClick = {
+                        showDialog = false
+                        datePickerState.selectedDateMillis?.let {
+                            onValueChange(item.copy(deadline = it))
+                        }
+                    }) {
+                        Text("Pick")
+                    }
+                }
+            ) {
+                DatePicker(state = datePickerState, showModeToggle = true)
+            }
         }
     }
+}
 
+@Composable
+fun TodoTaskInputBody(
+    todoUiState: TodoTaskUiState,
+    onItemValueChange: (TodoTaskForm) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        TodoTaskInputForm(
+            item = todoUiState.todoTask,
+            onValueChange = onItemValueChange,
+            modifier = modifier
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FormScreen(
+    navController: NavController,
+    viewModel: FormViewModel = viewModel(factory = AppViewModelProvider.Factory)
+) {
+    val coroutineScope = rememberCoroutineScope()
     Scaffold(
         topBar = {
             AppTopBar(
                 navController = navController,
                 title = "Form",
                 showBackIcon = true,
-                route = "list"
+                route = "list",
+                onSaveClick = {
+                    coroutineScope.launch {
+                        viewModel.save()
+                        navController.navigate("list")
+                    }
+                }
             )
-        },
-        content = { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .padding(paddingValues)
-                    .padding(16.dp)
-                    .fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("Tytuł zadania") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text("Priorytet:", style = MaterialTheme.typography.titleMedium)
-                Column(Modifier.selectableGroup()) {
-                    Priority.entries.forEach { priority ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .height(48.dp)
-                                .selectable(
-                                    selected = (priority == selectedPriority),
-                                    onClick = { selectedPriority = priority },
-                                    role = Role.RadioButton
-                                )
-                                .padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = (priority == selectedPriority),
-                                onClick = null
-                            )
-                            Text(
-                                text = priority.name,
-                                style = MaterialTheme.typography.bodyLarge,
-                                modifier = Modifier.padding(start = 16.dp)
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Checkbox(
-                        checked = isDone,
-                        onCheckedChange = { isDone = it }
-                    )
-                    Text("Czy zadanie jest wykonane?")
-                }
-
-                OutlinedTextField(
-                    value = deadline.format(DateTimeFormatter.ofPattern("MM/dd/yyyy")),
-                    onValueChange = { },
-                    label = { Text("Date") },
-                    placeholder = { Text("mm/dd/yyyy") },
-                    modifier = Modifier.fillMaxWidth(),
-                    readOnly = true,
-                    interactionSource = interactionSource,
-                    trailingIcon = {
-                        IconButton(onClick = { showDialog.value = true }) {
-                            Icon(imageVector = Icons.Default.DateRange, contentDescription = "Select Date")
-                        }
-                    },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.primary,
-                        focusedLabelColor = MaterialTheme.colorScheme.primary,
-                        unfocusedLabelColor = MaterialTheme.colorScheme.primary
-                    )
-                )
-
-                if (showDialog.value) {
-                    DatePickerDialog(
-                        onDismissRequest = { showDialog.value = false },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                datePickerState.selectedDateMillis?.let {
-                                    deadline = Instant.ofEpochMilli(it)
-                                        .atZone(ZoneId.systemDefault())
-                                        .toLocalDate()
-                                }
-                                showDialog.value = false
-                            }) {
-                                Text("OK")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showDialog.value = false }) {
-                                Text("Anuluj")
-                            }
-                        }
-                    ) {
-                        DatePicker(state = datePickerState)
-                    }
-                }
-            }
         }
-    )
+    ) { padding ->
+        TodoTaskInputBody(
+            todoUiState = viewModel.todoTaskUiState,
+            onItemValueChange = viewModel::updateUiState,
+            modifier = Modifier.padding(padding)
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -313,7 +480,8 @@ fun AppTopBar(
     navController: NavController,
     title: String,
     showBackIcon: Boolean,
-    route: String
+    route: String,
+    onSaveClick: () -> Unit = { }
 ) {
     TopAppBar(
         colors = TopAppBarDefaults.topAppBarColors(
@@ -334,7 +502,7 @@ fun AppTopBar(
         actions = {
             if (route != "form") {
                 OutlinedButton(
-                    onClick = { navController.navigate("list") }
+                    onClick = onSaveClick
                 ) {
                     Text(
                         text = "Zapisz",
